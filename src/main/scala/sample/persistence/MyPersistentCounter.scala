@@ -1,5 +1,6 @@
 package sample.persistence
 
+import akka.actor.typed.scaladsl.ActorContext
 import akka.{Done, NotUsed}
 import akka.actor.typed.{ActorRef, ActorSystem, Behavior}
 import akka.actor.typed.scaladsl.Behaviors
@@ -13,13 +14,11 @@ import akka.persistence.typed.state.scaladsl.{
 }
 
 object MyPersistentCounter {
-  sealed trait Command extends CborSerializable
-  final case class Increment(replyTo: ActorRef[StatusReply[Done]])
-      extends Command
-  final case class IncrementBy(value: Int, replyTo: ActorRef[StatusReply[Done]])
-      extends Command
-  final case class GetValue(replyTo: ActorRef[StatusReply[State]])
-      extends Command
+  sealed trait Command[ReplyMessage] extends CborSerializable
+  final case class Increment(replyTo: ActorRef[Done]) extends Command[Done]
+  final case class IncrementBy(value: Int, replyTo: ActorRef[Done])
+      extends Command[Done]
+  final case class GetValue(replyTo: ActorRef[State]) extends Command[Done]
 
   final case class State(value: Int) extends CborSerializable {
     def +(num: Int): State = copy(value = value + num)
@@ -28,35 +27,32 @@ object MyPersistentCounter {
     val empty: State = State(0)
   }
 
-  val commandHandler: (State, Command) => ReplyEffect[State] =
-    (state, command) =>
-      command match {
-        case Increment(replyTo) =>
-          println("increment")
-          Effect.persist(state + 1).thenReply(replyTo)(_ => StatusReply.Ack)
-        case IncrementBy(by, replyTo) =>
-          Effect.persist(state + by).thenReply(replyTo)(_ => StatusReply.Ack)
-        case GetValue(replyTo) =>
-          Effect.reply(replyTo)(StatusReply.success(state))
-        case _ =>
-          println("boo")
-          Effect.noReply
+  def apply(persistenceId: PersistenceId): Behavior[Command[_]] = {
+    Behaviors.setup[Command[_]] { context =>
+      counter(context, persistenceId)
     }
-  def apply(persistenceId: PersistenceId): Behavior[Command] = {
-    Behaviors.setup[Command] { context =>
-      println("apply")
-      context.log.debug("apply")
-      DurableStateBehavior[Command, State](
-        persistenceId,
-        emptyState = State.empty,
-//        commandHandler = CommandHandler.command[Command, State] { cmd =>
-//          println("Got commnd {}", cmd)
-//          context.log.debug("Got command {}", cmd)
-//          Effect.none
-//        }
-        commandHandler = commandHandler
-      )
-    }
+  }
+  def counter(
+    ctx: ActorContext[Command[_]],
+    persistenceId: PersistenceId
+  ): DurableStateBehavior[Command[_], State] = {
+    DurableStateBehavior[Command[_], State](
+      persistenceId,
+      emptyState = State.empty,
+      commandHandler = (state, command) =>
+        command match {
+          case Increment(replyTo) =>
+            println("increment")
+            Effect.persist(state + 1).thenReply(replyTo)(_ => Done)
+          case IncrementBy(by, replyTo) =>
+            Effect.persist(state + by).thenReply(replyTo)(_ => Done)
+          case GetValue(replyTo) =>
+            Effect.reply(replyTo)(state)
+          case _ =>
+            println("boo")
+            Effect.noReply
+      }
+    )
   }
 }
 
